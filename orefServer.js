@@ -4,64 +4,78 @@ const cors = require('cors');
 
 const app = express();
 
-// הגדרות CORS - מאפשרות לאתר שלך לגשת לשרת
+// הגדרות CORS - פתיחת גישה לכל המקורות
 app.use(cors({
-    origin: '*' // בייצור כדאי להגביל לכתובת האתר שלך
+    origin: '*'
 }));
 
-// דף נחיתה בסיסי לבדיקה שהשרת עובד
+// פונקציה לייצור User-Agent רנדומלי קלות למניעת זיהוי קבוע
+const getUserAgent = () => {
+    const versions = ['120.0.0.0', '121.0.0.0', '122.0.0.0', '123.0.0.0'];
+    const randomVersion = versions[Math.floor(Math.random() * versions.length)];
+    return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${randomVersion} Safari/537.36`;
+};
+
 app.get('/', (req, res) => {
-    res.send('Oref Alert Proxy is Running! Endpoint: /api/alerts');
+    res.send('Oref Alert Proxy is Running! Check /api/alerts');
 });
 
-// הנתיב המרכזי שמושך את הנתונים
 app.get('/api/alerts', async (req, res) => {
     try {
         const response = await axios.get('https://www.oref.org.il/WarningMessages/alert/alerts.json', {
-            timeout: 5000, // מחכה מקסימום 5 שניות
+            timeout: 3000, // הגדלת זמן ההמתנה ל-8 שניות
             headers: {
-                'Referer': 'https://www.oref.org.il/',
+                'Host': 'www.oref.org.il',
+                'Connection': 'keep-alive',
+                'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
                 'X-Requested-With': 'XMLHttpRequest',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'sec-ch-ua-mobile': '?0',
+                'User-Agent': getUserAgent(),
+                'sec-ch-ua-platform': '"Windows"',
+                'Accept': '*/*',
+                'Sec-Fetch-Site': 'same-origin',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Dest': 'empty',
+                'Referer': 'https://www.oref.org.il/he/alerts-history/current-alerts',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Connection': 'keep-alive',
                 'Cache-Control': 'no-cache',
                 'Pragma': 'no-cache'
             }
         });
 
-        // בדיקה אם הוחזרו נתונים (סטטוס 204 אומר שאין התראות כרגע)
+        // טיפול במצב שבו אין התראות (סטטוס 204)
         if (response.status === 204 || !response.data || response.data === "") {
             return res.json({ data: [], id: 0 });
         }
 
         res.json(response.data);
     } catch (error) {
-        // הדפסת שגיאה מפורטת ללוגים של Render
         console.error('--- Oref Fetch Error ---');
-        console.error('Message:', error.message);
         
         if (error.response) {
-            // השרת של פיקוד העורף ענה עם שגיאה (למשל 403 - חסום)
-            console.error('Status:', error.response.status);
-            return res.status(error.response.status).json({ 
-                error: 'Oref server responded with error',
-                status: error.response.status,
-                message: 'פיקוד העורף חוסם את הבקשה (ייתכן בגלל IP של השרת)'
-            });
-        } else if (error.request) {
-            // הבקשה נשלחה אך לא התקבלה תשובה (Time out)
-            console.error('No response received');
-            return res.status(504).json({ error: 'Timeout connecting to Oref' });
+            // טיפול בשגיאת 403 (חסימה)
+            const status = error.response.status;
+            console.error(`Status: ${status}`);
+            
+            if (status === 403) {
+                return res.status(403).json({ 
+                    error: 'Forbidden',
+                    status: 403,
+                    message: 'שרתי פיקוד העורף חוסמים את השרת הנוכחי. ייתכן וטווח ה-IP של Render נחסם.',
+                    suggestion: 'נסה לבצע פריסה מחדש (Manual Deploy) לקבלת IP חדש.'
+                });
+            }
+            
+            return res.status(status).json({ error: 'Oref server error', status });
         } else {
-            return res.status(500).json({ error: 'Internal Server Error', detail: error.message });
+            console.error('Error Message:', error.message);
+            res.status(500).json({ error: 'Internal Server Error', detail: error.message });
         }
     }
 });
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-    console.log(`Proxy server is running on port ${PORT}`);
+    console.log(`Server is active on port ${PORT}`);
 });
