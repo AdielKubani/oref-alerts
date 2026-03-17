@@ -6,27 +6,36 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-
-// הגדרות Socket.io עם תמיכה ב-CORS
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 app.use(cors());
 
-// פונקציה לייצור User-Agent רנדומלי
-const getUserAgent = () => {
-    const versions = ['120.0.0.0', '121.0.0.0', '122.0.0.0', '123.0.0.0'];
-    const randomVersion = versions[Math.floor(Math.random() * versions.length)];
-    return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${randomVersion} Safari/537.36`;
+let lastAlertId = null;
+let cookies = ''; // שמירת עוגיות מהאתר
+
+// פונקציה לקבלת עוגיות טריות מפיקוד העורף
+const refreshCookies = async () => {
+    try {
+        const response = await axios.get('https://www.oref.org.il/', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+            }
+        });
+        if (response.headers['set-cookie']) {
+            cookies = response.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
+            console.log('[System] Cookies refreshed successfully');
+        }
+    } catch (error) {
+        console.error('[Error] Failed to refresh cookies:', error.message);
+    }
 };
 
-let lastAlertId = null;
+// רענון עוגיות פעם ב-10 דקות
+setInterval(refreshCookies, 10 * 60 * 1000);
+refreshCookies();
 
-// פונקציה למשיכת נתונים מפיקוד העורף והפצה למנויים
 const checkOrefAlerts = async () => {
     try {
         const response = await axios.get('https://www.oref.org.il/WarningMessages/alert/alerts.json', {
@@ -34,29 +43,27 @@ const checkOrefAlerts = async () => {
             headers: {
                 'Host': 'www.oref.org.il',
                 'Connection': 'keep-alive',
+                'Content-Type': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest',
-                'User-Agent': getUserAgent(),
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                 'Accept': '*/*',
                 'Referer': 'https://www.oref.org.il/he/alerts-history/current-alerts',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Accept-Language': 'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Cookie': cookies // שימוש בעוגיות שקיבלנו
             }
         });
 
         const data = response.data;
 
-        // בדיקה אם יש התראה חדשה (ID שונה מהפעם האחרונה)
         if (response.status === 200 && data && data.id !== lastAlertId) {
             lastAlertId = data.id;
-            console.log('New Alert Detected:', data.data);
-            // שליחת ההתראה לכל מי שגולש באתר ברגע זה
             io.emit('alert-update', {
                 alerts: data.data,
                 id: data.id,
-                time: new Date().toLocaleTimeString('he-IL')
+                time: new Date().toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
             });
-        } else if (response.status === 204 || !data) {
-            // מצב שגרה - אין התראות
+        } else if (response.status === 204 || !data || data === "") {
             if (lastAlertId !== null) {
                 lastAlertId = null;
                 io.emit('alert-update', { alerts: [], id: 0 });
@@ -64,32 +71,23 @@ const checkOrefAlerts = async () => {
         }
     } catch (error) {
         if (error.response && error.response.status === 403) {
-            io.emit('server-error', { message: 'IP Blocked by Oref (403)' });
+            console.log('[Status] 403 Forbidden - Oref is blocking this IP');
+            io.emit('server-error', { 
+                message: 'חסימת IP (403). פיקוד העורף מזהה את Render כשרת ענן. מנסה לרענן עוגיות...' 
+            });
+            refreshCookies(); // נסיון רענון מיידי בעת חסימה
         }
-        console.error('Oref Fetch Error:', error.message);
     }
 };
 
-// לולאת בדיקה בשרת - כל 2 שניות
 setInterval(checkOrefAlerts, 2000);
 
-app.get('/', (req, res) => {
-    res.send('Oref WebSocket Proxy is Running!');
-});
+app.get('/', (req, res) => res.send('Oref Stealth Proxy is Running'));
 
-// ניהול חיבורי לקוחות
 io.on('connection', (socket) => {
     console.log('Client connected:', socket.id);
-    
-    // שליחת מצב נוכחי למתחבר חדש
-    socket.emit('status', { connected: true, monitoring: true });
-
-    socket.on('disconnect', () => {
-        console.log('Client disconnected');
-    });
+    socket.emit('status', { connected: true });
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-    console.log(`WebSocket Server active on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
